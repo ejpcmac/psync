@@ -13,7 +13,7 @@ Error() {
             echo "Patch Sync Utility"
             echo "version: 0.1-alpha"
             echo
-            echo "Usage: $0 <command> [parameters]"
+            echo "Usage: psync <command> [parameters]"
             echo
             echo "List of commands:"
             echo "    diff <source> <patchdir>      Compare source tree with the state file and make a patch"
@@ -25,47 +25,47 @@ Error() {
             ;;
 
         "init usage")
-            echo "usage: $0 init <directory>"
+            echo "usage: psync init <directory>"
             exit 1
             ;;
 
         "diff usage")
-            echo "usage: $0 diff <source> <patchdir>"
+            echo "usage: psync diff <source> <patchdir>"
             exit 1
             ;;
         
         "patch usage")
-            echo "usage: $0 patch <dest> <patchdir>"
+            echo "usage: psync patch <dest> <patchdir>"
             exit 1
             ;;
 
         "directory")
-            echo "$0: $2: No such directory"
+            echo "psync: $2: No such directory"
             exit 2
             ;;
 
         "not empty")
-            echo "$0: $2: The patch directory must be empty"
+            echo "psync: $2: The patch directory must be empty"
             exit 3
             ;;
 
         "not accessible")
-            echo "$0: $2: Directory not accessible"
+            echo "psync: $2: Directory not accessible"
             exit 4
             ;;
 
         "not writable")
-            echo "$0: $2: Directory not writable"
+            echo "psync: $2: Directory not writable"
             exit 4
             ;;
 
         "bad patchdir")
-            echo "$0: $2: Bad patch directory"
+            echo "psync: $2: Bad patch directory"
             exit 5
             ;;
 
         "list")
-            echo "$0: Impossible to list the files"
+            echo "psync: Impossible to list the files"
             exit 6
             ;;
     esac
@@ -74,14 +74,14 @@ Error() {
 
 Check_directory() {
     if [ ! -d "$1" ]; then
-        Error "directory" $1
+        Error "directory" "$1"
     fi
 }
 
 
 Check_empty() {
     if [ "$(ls -A "$1")" ]; then
-        Error "not empty" $1
+        Error "not empty" "$1"
     fi
 }
 
@@ -89,7 +89,7 @@ Check_empty() {
 Go_into() {
     cd "$1"
     if [ "$?" -ne 0 ]; then
-        Error "not accessible" $1
+        Error "not accessible" "$1"
     fi
 }
 
@@ -97,7 +97,7 @@ Go_into() {
 Check_writability() {
     touch "$1/.psynctest" 2> /dev/null
     if [ "$?" -ne 0 ]; then
-        Error "not writable" $1
+        Error "not writable" "$1"
     fi
     rm "$1/.psynctest"
 }
@@ -105,7 +105,7 @@ Check_writability() {
 
 Check_patchdir() {
     if [ ! -f "$1/del" ] || [ ! -f "$1/new" ]; then
-        Error "bad patchdir" $1
+        Error "bad patchdir" "$1"
     fi
 }
 
@@ -135,8 +135,8 @@ case $1 in
             Error "init usage"
         fi
         
-        Check_directory $2
-        Go_into $2
+        Check_directory "$2"
+        Go_into "$2"
         Check_writability .
 
         echo "Creating the directory initial state file..."
@@ -150,13 +150,13 @@ case $1 in
             Error "diff usage"
         fi
 
-        Check_directory $2
-        Check_directory $3
-        Check_empty $3
+        Check_directory "$2"
+        Check_directory "$3"
+        Check_empty "$3"
         patchdir=$(realpath "$3")
-        Go_into $2
+        Go_into "$2"
         Check_writability .
-        Check_writability $patchdir
+        Check_writability "$patchdir"
 
         if [ ! -f .psyncstate ]; then
             echo "No existing state file, creating an empty one."
@@ -193,11 +193,11 @@ case $1 in
             Error "patch usage"
         fi
 
-        Check_directory $2
-        Check_directory $3
-        Check_patchdir $3
+        Check_directory "$2"
+        Check_directory "$3"
+        Check_patchdir "$3"
         patchdir=$(realpath "$3")
-        Go_into $2
+        Go_into "$2"
         Check_writability .
 
         echo "Deleting files..."
