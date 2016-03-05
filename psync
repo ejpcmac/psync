@@ -1,0 +1,219 @@
+#!/bin/sh
+#
+# psync - Patch Sync Utility
+# version: 0.1-alpha
+#
+# Jean-Philippe Cugnet, March 2016
+# <jean-philippe@cugnet.eu>
+
+
+Error() {
+    case $1 in
+        "usage")
+            echo "Patch Sync Utility"
+            echo "version: 0.1-alpha"
+            echo
+            echo "Usage: $0 <command> [parameters]"
+            echo
+            echo "List of commands:"
+            echo "    diff <source> <patchdir>      Compare source tree with the state file and make a patch"
+            echo "    patch <dest> <patchdir>       Patch the destination directory"
+            echo
+            echo "    init <directory>              Create the initial state file"
+            echo
+            exit 1
+            ;;
+
+        "init usage")
+            echo "usage: $0 init <directory>"
+            exit 1
+            ;;
+
+        "diff usage")
+            echo "usage: $0 diff <source> <patchdir>"
+            exit 1
+            ;;
+        
+        "patch usage")
+            echo "usage: $0 patch <dest> <patchdir>"
+            exit 1
+            ;;
+
+        "directory")
+            echo "$0: $2: No such directory"
+            exit 2
+            ;;
+
+        "not empty")
+            echo "$0: $2: The patch directory must be empty"
+            exit 3
+            ;;
+
+        "not accessible")
+            echo "$0: $2: Directory not accessible"
+            exit 4
+            ;;
+
+        "not writable")
+            echo "$0: $2: Directory not writable"
+            exit 4
+            ;;
+
+        "bad patchdir")
+            echo "$0: $2: Bad patch directory"
+            exit 5
+            ;;
+
+        "list")
+            echo "$0: Impossible to list the files"
+            exit 6
+            ;;
+    esac
+}
+
+
+Check_directory() {
+    if [ ! -d "$1" ]; then
+        Error "directory" $1
+    fi
+}
+
+
+Check_empty() {
+    if [ "$(ls -A "$1")" ]; then
+        Error "not empty" $1
+    fi
+}
+
+
+Go_into() {
+    cd "$1"
+    if [ "$?" -ne 0 ]; then
+        Error "not accessible" $1
+    fi
+}
+
+
+Check_writability() {
+    touch "$1/.psynctest" 2> /dev/null
+    if [ "$?" -ne 0 ]; then
+        Error "not writable" $1
+    fi
+    rm "$1/.psynctest"
+}
+
+
+Check_patchdir() {
+    if [ ! -f "$1/del" ] || [ ! -f "$1/new" ]; then
+        Error "bad patchdir" $1
+    fi
+}
+
+
+Make_statefile() {
+    find . -exec ls -alhdTnp {} + | tee .psyncstate | \
+        awk '{ printf "\r"NR } END { print " files to consider" }'
+
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        rm .psyncstate
+        Error "list"
+    fi
+}
+
+
+#########
+# START #
+#########
+
+if [ "$#" -lt 1 ]; then
+    Error "usage"
+fi
+
+case $1 in
+    init)
+        if [ "$#" -ne 2 ]; then
+            Error "init usage"
+        fi
+        
+        Check_directory $2
+        Go_into $2
+        Check_writability .
+
+        echo "Creating the directory initial state file..."
+        Make_statefile
+
+        echo "Initial state file created!"
+        ;;
+
+    diff)
+        if [ "$#" -ne 3 ]; then
+            Error "diff usage"
+        fi
+
+        Check_directory $2
+        Check_directory $3
+        Check_empty $3
+        patchdir=$(realpath "$3")
+        Go_into $2
+        Check_writability .
+        Check_writability $patchdir
+
+        if [ ! -f .psyncstate ]; then
+            echo "No existing state file, creating an empty one."
+            touch .psyncstate
+        fi
+
+        echo "Backing up the state file..."
+        cp .psyncstate "$patchdir/.oldstate"
+
+        echo "Checking the current state of the directory..."
+        Make_statefile
+
+        echo "Checking differences with previous state..."
+        diff "$patchdir/.oldstate" .psyncstate > "$patchdir/.diff"
+        
+        echo "Creating archive of files added or modified since last sync..."
+        cat "$patchdir/.diff" | awk '$1 == ">" { print $11 }' | tee "$patchdir/.newlist" | \
+            tar --numeric-owner -vncf "$patchdir/new" -T -
+        echo
+        
+        echo "Files deleted since last sync:"
+        cat "$patchdir/.diff" | awk '$1 == "<" { print $11 }' | diff - "$patchdir/.newlist" | \
+            awk '$1 == "<" { print $2 }' | tee "$patchdir/del"
+        echo
+
+        rm "$patchdir/.newlist"
+        rm "$patchdir/.diff"
+        rm "$patchdir/.oldstate"
+        echo "Patch successfully created and state file updated!"
+        ;;
+
+    patch)
+        if [ "$#" -ne 3 ]; then
+            Error "patch usage"
+        fi
+
+        Check_directory $2
+        Check_directory $3
+        Check_patchdir $3
+        patchdir=$(realpath "$3")
+        Go_into $2
+        Check_writability .
+
+        echo "Deleting files..."
+        for f in $(tail -r "$patchdir/del"); do
+            rm -vrf "$f"
+        done
+
+        echo
+        echo "Applying modifications..."
+        tar --same-owner -vpxf "$patchdir/new"
+
+        echo
+        echo "Patch successfully applied!"
+        ;;
+
+    *)
+        Error "usage"
+        ;;
+esac
