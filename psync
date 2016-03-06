@@ -1,17 +1,22 @@
 #!/bin/sh
-#
-# psync - Patch Sync Utility
-# version: 0.1-alpha
-#
-# Jean-Philippe Cugnet, March 2016
-# <jean-philippe@cugnet.eu>
+###
+### psync - Patch Sync Utility
+### version: 0.1.1-alpha
+###
+### Jean-Philippe Cugnet, March 2016
+### <jean-philippe@cugnet.eu>
+
+### The GNU version of tar is needed for patching. On Linux systems, set GNUTAR as tar. On BSD
+### systems like FreeBSD or Mac OS X, you must install gnu-tar and set GNUTAR as gtar.
+# GNUTAR=tar
+GNUTAR=gtar
 
 
 Error() {
     case $1 in
         "usage")
             echo "Patch Sync Utility"
-            echo "version: 0.1-alpha"
+            echo "version: 0.1.1-alpha"
             echo
             echo "Usage: psync <command> [parameters]"
             echo
@@ -111,13 +116,18 @@ Check_patchdir() {
 
 
 Make_statefile() {
-    find . -exec ls -alhdTnp {} + | tee .psyncstate | \
+    mkfifo /tmp/psync.fifo
+    
+    gzip -9 < /tmp/psync.fifo > .psyncstate &
+    find . -exec ls -alhdTnp {} + | tee /tmp/psync.fifo | \
         awk '{ printf "\r"NR } END { print " files to consider" }'
 
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         rm .psyncstate
         Error "list"
     fi
+    
+    rm /tmp/psync.fifo
 }
 
 
@@ -160,31 +170,37 @@ case $1 in
 
         if [ ! -f .psyncstate ]; then
             echo "No existing state file, creating an empty one."
-            touch .psyncstate
+            /bin/echo -n | gzip -9 - > .psyncstate
         fi
 
         echo "Backing up the state file..."
-        cp .psyncstate "$patchdir/.oldstate"
+        cp -a .psyncstate /tmp/psync.oldstate
 
         echo "Checking the current state of the directory..."
         Make_statefile
 
         echo "Checking differences with previous state..."
-        diff "$patchdir/.oldstate" .psyncstate > "$patchdir/.diff"
-        
+        mkfifo /tmp/psync.fifo
+        gzcat /tmp/psync.oldstate > /tmp/psync.fifo &
+        gzcat .psyncstate | diff /tmp/psync.fifo - > /tmp/psync.diff
+        rm /tmp/psync.fifo
+
         echo "Creating archive of files added or modified since last sync..."
-        cat "$patchdir/.diff" | awk '$1 == ">" { print $11 }' | tee "$patchdir/.newlist" | \
+        cat /tmp/psync.diff | \
+            awk '$1 == ">" { for (i=11; i<NF; i++) { printf $i" " } print $NF }' | \
+            tee /tmp/psync.newlist | \
             tar --numeric-owner -vncf "$patchdir/new" -T -
         echo
         
         echo "Files deleted since last sync:"
-        cat "$patchdir/.diff" | awk '$1 == "<" { print $11 }' | diff - "$patchdir/.newlist" | \
-            awk '$1 == "<" { print $2 }' | tee "$patchdir/del"
+        cat /tmp/psync.diff | \
+            awk '$1 == "<" { for (i=11; i<NF; i++) { printf $i" " } print $NF }' | \
+            diff - /tmp/psync.newlist | \
+            awk '$1 == "<" { for (i=2; i<NF; i++) { printf $i" " } print $NF }' | \
+            tee "$patchdir/del"
         echo
 
-        rm "$patchdir/.newlist"
-        rm "$patchdir/.diff"
-        rm "$patchdir/.oldstate"
+        rm /tmp/psync.*
         echo "Patch successfully created and state file updated!"
         ;;
 
@@ -207,7 +223,7 @@ case $1 in
 
         echo
         echo "Applying modifications..."
-        tar --same-owner -vpxf "$patchdir/new"
+        $GNUTAR --delay-directory-restore --same-owner -vpxf "$patchdir/new"
 
         echo
         echo "Patch successfully applied!"
