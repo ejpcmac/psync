@@ -1,22 +1,17 @@
 #!/bin/sh
 ###
 ### psync - Patch Sync Utility
-### version: 0.1.2
+### version: 0.1.3
 ###
 ### Jean-Philippe Cugnet, March 2016
 ### <jean-philippe@cugnet.eu>
-
-### The GNU version of tar is needed for patching. On Linux systems, set GNUTAR as tar. On BSD
-### systems like FreeBSD or Mac OS X, you must install gnu-tar and set GNUTAR as gtar.
-# GNUTAR=tar
-GNUTAR=gtar
 
 
 Error() {
     case $1 in
         "usage")
             echo "Patch Sync Utility"
-            echo "version: 0.1.2"
+            echo "version: 0.1.3"
             echo
             echo "Usage: psync <command> [parameters]"
             echo
@@ -109,7 +104,7 @@ Check_writability() {
 
 
 Check_patchdir() {
-    if [ ! -f "$1/del" ] || [ ! -f "$1/new" ]; then
+    if [ ! -f "$1/del" ] || [ ! -f "$1/new" ] || [ ! -f "$1/newdir" ]; then
         Error "bad patchdir" "$1"
     fi
 }
@@ -192,7 +187,11 @@ case $1 in
         cat /tmp/psync.diff | \
             awk '$1 == ">" { for (i=9; i<NF; i++) { printf "%s ",$i } print $NF }' | \
             tee /tmp/psync.newlist | \
-            tar --numeric-owner -vncf "$patchdir/new" -T -
+            grep -v /$ | tar --numeric-owner -vncf "$patchdir/new" -T -
+        echo
+
+        echo "Creating archive of directories added or modified since last sync..."
+        grep /$ /tmp/psync.newlist | tar --numeric-owner -vncf "$patchdir/newdir" -T -
         echo
         
         echo "Files deleted since last sync:"
@@ -223,12 +222,16 @@ case $1 in
         for f in $(tail -r "$patchdir/del"); do
             rm -vrf "$f"
         done
-
         echo
-        echo "Applying modifications..."
-        $GNUTAR --delay-directory-restore --same-owner -vpxf "$patchdir/new"
-
+        
+        echo "Applying modifications to files..."
+        tar --same-owner -vpxf "$patchdir/new"
         echo
+
+        echo "Applying modification to directories..."
+        tar --same-owner -vpxf "$patchdir/newdir"
+        echo
+
         echo "Patch successfully applied!"
         ;;
 
