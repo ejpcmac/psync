@@ -1,7 +1,7 @@
 #!/bin/sh
 ###
 ### psync - Patch Sync Utility
-### version: 0.1.3
+### version: 0.2
 ###
 ### Jean-Philippe Cugnet, March 2016
 ### <jean-philippe@cugnet.eu>
@@ -11,7 +11,7 @@ Error() {
     case $1 in
         "usage")
             echo "Patch Sync Utility"
-            echo "version: 0.1.3"
+            echo "version: 0.2"
             echo
             echo "Usage: psync <command> [parameters]"
             echo
@@ -35,7 +35,7 @@ Error() {
             ;;
         
         "patch usage")
-            echo "usage: psync patch <dest> <patchdir>"
+            echo "usage: psync patch <dest> <patchdir> [-f <uid> [timestamp]]"
             exit 1
             ;;
 
@@ -44,29 +44,37 @@ Error() {
             exit 2
             ;;
 
-        "not empty")
-            echo "psync: $2: The patch directory must be empty"
-            exit 3
-            ;;
-
         "not accessible")
             echo "psync: $2: Directory not accessible"
-            exit 4
+            exit 2
             ;;
 
         "not writable")
             echo "psync: $2: Directory not writable"
-            exit 4
+            exit 2
             ;;
 
         "bad patchdir")
             echo "psync: $2: Bad patch directory"
-            exit 5
+            exit 2
             ;;
 
         "list")
             echo "psync: Impossible to list the files"
-            exit 6
+            Clear_workdir
+            exit 3
+            ;;
+
+        "patch exists")
+            echo "psync: A patch already exists for this timestamp. Try to patch before diff."
+            exit 4
+            ;;
+
+        "no statefile")
+            echo "psync: No state file in the destination. You can try using -f option."
+            echo
+            echo "usage: psync patch <dest> <patchdir> [-f <uid> [timestamp]]"
+            exit 8
             ;;
     esac
 }
@@ -75,13 +83,6 @@ Error() {
 Check_directory() {
     if [ ! -d "$1" ]; then
         Error "directory" "$1"
-    fi
-}
-
-
-Check_empty() {
-    if [ "$(ls -A "$1")" ]; then
-        Error "not empty" "$1"
     fi
 }
 
@@ -110,22 +111,38 @@ Check_patchdir() {
 }
 
 
+Make_workdir() {
+    work="/tmp/psync.$uid"
+    if [ ! -d "$work" ]; then
+        mkdir "$work"
+    fi
+}
+
+
+Clear_workdir() {
+    rm -rf "$work"
+}
+
+
 Make_statefile() {
-    mkfifo /tmp/psync.fifo
+    mkfifo "$work/fifo"
     
-    awk '{ printf "\r"NR } END { print " files to consider" }' /tmp/psync.fifo &&
-    echo "Saving the state file..." &
-    find . -exec ls -aldTnp {} + | \
-        awk '{ { printf $1" "$3" "$4" " } for (i=6; i<NF; i++) { printf "%s ",$i } print $NF }' | \
-        tee /tmp/psync.fifo | sort -k 8 | \
-        gzip -9 - > .psyncstate
-    
+    echo "$uid\n$(date +%s)" | gzip -9 - > "$work/statefile"
+
+    awk '{ printf "%s files...\r",NR } END { print NR" files to consider" }' "$work/fifo" &&
+    echo "Saving the current state file..." &
+    find . -not -path ./.psyncstate -exec stat -f "%m%t%p%t%u%t%g%t%N%t%T" {} + | \
+        awk -F\t '{ printf "%s",$1; for (i=2; i<NF; i++) printf "\t%s",$i }
+            $NF != "/" { $NF="" } {print $NF}' | \
+        tee "$work/fifo" | sort -t $'\t' -k 5 | \
+        gzip -9 - >> "$work/statefile"
+
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        rm .psyncstate
+        rm "$work/statefile"
         Error "list"
     fi
     
-    rm /tmp/psync.fifo
+    rm "$work/fifo"
 }
 
 
@@ -145,12 +162,19 @@ case $1 in
         
         Check_directory "$2"
         Go_into "$2"
-        Check_writability .
+        Check_writability "."
+
+        uid=$(dd if=/dev/random count=1 2> /dev/null | shasum | awk '{ print $1 }')
+        Make_workdir
 
         echo "Creating the directory initial state file..."
         Make_statefile
 
+        echo "Moving the state file to the directory..."
+        cp -a "$work/statefile" .psyncstate
         echo "Initial state file created!"
+        
+        Clear_workdir
         ;;
 
     diff)
@@ -160,79 +184,165 @@ case $1 in
 
         Check_directory "$2"
         Check_directory "$3"
-        Check_empty "$3"
         patchdir=$(realpath "$3")
         Go_into "$2"
-        Check_writability .
+        Check_writability "."
         Check_writability "$patchdir"
 
         if [ ! -f .psyncstate ]; then
             echo "No existing state file, creating an empty one."
-            /bin/echo -n | gzip -9 - > .psyncstate
+            uid=$(dd if=/dev/random count=1 2> /dev/null | shasum | awk '{ print $1 }')
+            echo "$uid\n0" | gzip -9 - > .psyncstate
         fi
 
-        echo "Backing up the state file..."
-        cp -a .psyncstate /tmp/psync.oldstate
+        uid=$(gzcat .psyncstate | sed -n 1p)
+        ts=$(gzcat .psyncstate | sed -n 2p)
 
+        if [ ! -d "$patchdir/$uid" ]; then
+            mkdir "$patchdir/$uid"
+        fi
+
+        if [ -d "$patchdir/$uid/$ts" ]; then
+            Error "patch exists"
+        fi
+        
+        mkdir "$patchdir/$uid/$ts"
+        Make_workdir
+        
         echo "Checking the current state of the directory..."
         Make_statefile
 
         echo "Checking differences with previous state..."
-        mkfifo /tmp/psync.fifo
-        gzcat /tmp/psync.oldstate > /tmp/psync.fifo &
-        gzcat .psyncstate | diff /tmp/psync.fifo - > /tmp/psync.diff
-        rm /tmp/psync.fifo
+        mkfifo "$work/fifo"
+        gzcat "$work/statefile" | tail -n+3 > "$work/fifo" &
+        gzcat .psyncstate | tail -n+3 | diff - "$work/fifo" > "$work/diff"
+        rm "$work/fifo"
 
         echo "Creating archive of files added or modified since last sync..."
-        cat /tmp/psync.diff | \
-            awk '$1 == ">" { for (i=9; i<NF; i++) { printf "%s ",$i } print $NF }' | \
-            tee /tmp/psync.newlist | \
-            grep -v /$ | tar --numeric-owner -vncf "$patchdir/new" -T -
+        cat "$work/diff" | awk '$1 == ">"' | awk -F\t '{ print $5 }' | tee "$work/newlist" | \
+            grep -v /$ | tar --numeric-owner -vncf "$patchdir/$uid/$ts/new" -T -
         echo
 
         echo "Creating archive of directories added or modified since last sync..."
-        grep /$ /tmp/psync.newlist | tar --numeric-owner -vncf "$patchdir/newdir" -T -
+        grep /$ "$work/newlist" | tar --numeric-owner -vncf "$patchdir/$uid/$ts/newdir" -T -
         echo
         
         echo "Files deleted since last sync:"
-        cat /tmp/psync.diff | \
-            awk '$1 == "<" { for (i=9; i<NF; i++) { printf "%s ",$i } print $NF }' | \
-            diff - /tmp/psync.newlist | \
-            awk '$1 == "<" { for (i=2; i<NF; i++) { printf "%s ",$i } print $NF }' | \
-            tee "$patchdir/del"
+        cat "$work/diff" | awk '$1 == "<"' | awk -F\t '{ print $5 }' | \
+            diff - "$work/newlist" | awk '$1 == "<"' | cut -c 3- | \
+            tee "$patchdir/$uid/$ts/del"
         echo
 
-        rm /tmp/psync.*
+        
+        echo "Updating the state file..."
+        cp -a "$work/statefile" .psyncstate
+        tar --numeric-owner -nrf "$patchdir/$uid/$ts/new" ./.psyncstate
         echo "Patch successfully created and state file updated!"
+
+        Clear_workdir
+
+        if [ "$ts" -eq 0 ]; then
+            echo
+            echo "The patch created is an initial one. You can patch an empty directory with:"
+            echo
+            echo "    psync patch <empty_dir> $3 -f $uid"
+            echo
+        fi
         ;;
 
     patch)
-        if [ "$#" -ne 3 ]; then
+        if [ "$#" -lt 3 ]; then
             Error "patch usage"
         fi
 
+        if [ "$#" -gt 3 ]; then
+            if [ "$#" -eq 4 ] || [ "$#" -gt 6 ] || [ "$4" != "-f" ]; then
+                Error "patch usage"
+            fi
+        fi
+        
         Check_directory "$2"
         Check_directory "$3"
-        Check_patchdir "$3"
         patchdir=$(realpath "$3")
         Go_into "$2"
-        Check_writability .
-
-        echo "Deleting files..."
-        for f in $(tail -r "$patchdir/del"); do
-            rm -vrf "$f"
-        done
-        echo
+        Check_writability "."
         
-        echo "Applying modifications to files..."
-        tar --same-owner -vpxf "$patchdir/new"
-        echo
+        if [ "$#" -gt 3 ]; then
+            uid="$5"
+            
+            if [ "$#" -eq 6 ]; then
+                ts="$6"
+            else
+                ts=0
+            fi
 
-        echo "Applying modification to directories..."
-        tar --same-owner -vpxf "$patchdir/newdir"
-        echo
+            if [ "$ts" -ne 0 ]; then
+                read -p \
+                  "Are you sure to apply a patch as if the directory were at timestamp $ts? [y/N]"\
+                  -n 1 -s answer
+                echo
+                if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
+                    echo "Aborted!"
+                    exit 0
+                fi
+            elif [ "$(ls -A)" ]; then
+                read -p \
+                  "The destination directory is not empty. Are you sure to apply the patch? [y/N]"\
+                  -n 1 -s answer
+                echo
+                if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
+                    echo "Aborted!"
+                    exit 0
+                fi
+            fi
 
-        echo "Patch successfully applied!"
+            echo "$uid\n$ts" | gzip -9 - > .psyncstate
+        fi
+
+        if [ ! -f .psyncstate ]; then
+            Error "no statefile"
+        fi
+
+        while true; do
+            uid=$(gzcat .psyncstate | sed -n 1p)
+            ts=$(gzcat .psyncstate | sed -n 2p)
+
+            echo "Checking if there is a new patch for timestamp $ts..."
+            if [ ! -d "$patchdir/$uid/$ts" ]; then
+                echo "No patch available!"
+                exit 0
+            fi
+           
+            echo "Applying patch:"
+            echo
+
+            Check_patchdir "$patchdir/$uid/$ts"
+
+            echo "Deleting files..."
+            for f in $(tail -r "$patchdir/$uid/$ts/del"); do
+                rm -vrf "./$f"
+            done
+            echo
+        
+            echo "Applying modifications to files..."
+            tar --same-owner -vpxf "$patchdir/$uid/$ts/new"
+            echo
+
+            echo "Applying modification to directories..."
+            tar --same-owner -vpxf "$patchdir/$uid/$ts/newdir"
+            echo
+
+            echo "Patch successfully applied!"
+            
+            read -p "Delete the applied patch? [Y/n] " -n 1 -s answer
+            echo
+            if [ "$answer" != "n" ] && [ "$answer" != "N" ]; then
+                rm -rf "$patchdir/$uid/$ts"
+                echo "Patch deleted!"
+            fi
+
+            echo
+        done
         ;;
 
     *)
