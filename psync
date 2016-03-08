@@ -1,7 +1,7 @@
 #!/bin/sh
 ###
 ### psync - Patch Sync Utility
-### version: 0.2
+### version: 0.2-alpha
 ###
 ### Jean-Philippe Cugnet, March 2016
 ### <jean-philippe@cugnet.eu>
@@ -11,7 +11,7 @@ Error() {
     case $1 in
         "usage")
             echo "Patch Sync Utility"
-            echo "version: 0.2"
+            echo "version: 0.2-alpha"
             echo
             echo "Usage: psync <command> [parameters]"
             echo
