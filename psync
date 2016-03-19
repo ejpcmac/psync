@@ -1,7 +1,7 @@
 #!/bin/sh
 ###
 ### psync - Patch Sync Utility
-### version: 0.2-alpha
+### version: 0.2.1-alpha
 ###
 ### Jean-Philippe Cugnet, March 2016
 ### <jean-philippe@cugnet.eu>
@@ -11,7 +11,7 @@ Error() {
     case $1 in
         "usage")
             echo "Patch Sync Utility"
-            echo "version: 0.2-alpha"
+            echo "version: 0.2.1-alpha"
             echo
             echo "Usage: psync <command> [parameters]"
             echo
@@ -131,7 +131,7 @@ Make_statefile() {
 
     awk '{ printf "%s files...\r",NR } END { print NR" files to consider" }' "$work/fifo" &&
     echo "Saving the current state file..." &
-    find . -not -path ./.psyncstate -exec stat -f "%m%t%p%t%u%t%g%t%N%t%T" {} + | \
+    find . -not -path ./.psyncstate -exec stat -f "%c%t%p%t%u%t%g%t%N%t%T" {} + | \
         awk -F\t '{ printf "%s",$1; for (i=2; i<NF; i++) printf "\t%s",$i }
             $NF != "/" { $NF="" } {print $NF}' | \
         tee "$work/fifo" | sort -t $'\t' -k 5 | \
