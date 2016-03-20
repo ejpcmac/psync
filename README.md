@@ -20,7 +20,9 @@ There is several ways to initialise the synchronisation system. The first is to 
 
     $ psync init "Directory A"
 
-Then, use a traditional sync utility like `rsync` to synchronise the directory with other directories, in order to make them be in the same initial state.
+Then, use a traditional sync utility like `rsync` to synchronise the directory with other directories, in order to make them be in the same initial state. **As `psync` uses `ctime` to check the modifications, when the directory is copied *via* another utility than `psync`, the state file must be then updated as follows:**
+
+    $ psync update "Directory B"
 
 Another solution is to create an initial patch:
 

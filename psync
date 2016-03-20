@@ -1,7 +1,7 @@
 #!/bin/sh
 ###
 ### psync - Patch Sync Utility
-### version: 0.2.1-alpha
+### version: 0.3-alpha
 ###
 ### Jean-Philippe Cugnet, March 2016
 ### <jean-philippe@cugnet.eu>
@@ -11,7 +11,7 @@ Error() {
     case $1 in
         "usage")
             echo "Patch Sync Utility"
-            echo "version: 0.2.1-alpha"
+            echo "version: 0.3-alpha"
             echo
             echo "Usage: psync <command> [parameters]"
             echo
@@ -20,6 +20,9 @@ Error() {
             echo "    patch <dest> <patchdir>       Patch the destination directory"
             echo
             echo "    init <directory>              Create the initial state file"
+            echo "    update <directory>            Update the state file without changeing the timestamp"
+            echo
+            echo "    upgrade <directory>           Upgrade the state file version"
             echo
             exit 1
             ;;
@@ -29,13 +32,23 @@ Error() {
             exit 1
             ;;
 
+        "update usage")
+            echo "usage: psync update <directory>"
+            exit 1
+            ;;
+
         "diff usage")
             echo "usage: psync diff <source> <patchdir>"
             exit 1
             ;;
-        
+
         "patch usage")
             echo "usage: psync patch <dest> <patchdir> [-f <uid> [timestamp]]"
+            exit 1
+            ;;
+
+        "upgrade usage")
+            echo "usage: psync upgrade <directory>"
             exit 1
             ;;
 
@@ -54,8 +67,18 @@ Error() {
             exit 2
             ;;
 
+        "bad statefile")
+            echo "psync: Bad state file format. You may try to upgrade"
+            exit 2
+            ;;
+
         "bad patchdir")
             echo "psync: $2: Bad patch directory"
+            exit 2
+            ;;
+
+        "no statefile")
+            echo "psync: No state file in the directory. You may try to init"
             exit 2
             ;;
 
@@ -70,7 +93,7 @@ Error() {
             exit 4
             ;;
 
-        "no statefile")
+        "no statefile dest")
             echo "psync: No state file in the destination. You can try using -f option."
             echo
             echo "usage: psync patch <dest> <patchdir> [-f <uid> [timestamp]]"
@@ -104,8 +127,20 @@ Check_writability() {
 }
 
 
+Load_statefile() {
+    sfversion=$(gzcat .psyncstate | sed -n 1p)
+    if [ "$sfversion" != "~psf!1.0" ]; then
+        Error "bad statefile"
+    fi
+
+    uid=$(gzcat .psyncstate | sed -n 2p)
+    ts=$(gzcat .psyncstate | sed -n 3p)
+}
+
+
 Check_patchdir() {
-    if [ ! -f "$1/del" ] || [ ! -f "$1/new" ] || [ ! -f "$1/newdir" ]; then
+    if [ ! -f "$1/statetime" ] || [ ! -f "$1/del" ] || [ ! -f "$1/new" ] || [ ! -f "$1/newdir" ]
+    then
         Error "bad patchdir" "$1"
     fi
 }
@@ -126,22 +161,21 @@ Clear_workdir() {
 
 Make_statefile() {
     mkfifo "$work/fifo"
-    
-    echo "$uid\n$(date +%s)" | gzip -9 - > "$work/statefile"
+
+    echo "~psf!1.0\n$uid\n$statetime" | gzip -9 - > "$work/statefile"
 
     awk '{ printf "%s files...\r",NR } END { print NR" files to consider" }' "$work/fifo" &&
     echo "Saving the current state file..." &
-    find . -not -path ./.psyncstate -exec stat -f "%c%t%p%t%u%t%g%t%N%t%T" {} + | \
-        awk -F\t '{ printf "%s",$1; for (i=2; i<NF; i++) printf "\t%s",$i }
-            $NF != "/" { $NF="" } {print $NF}' | \
-        tee "$work/fifo" | sort -t $'\t' -k 5 | \
+    find . -not -path ./.psyncstate -exec stat -f "%c%t%N%t%T" {} + | \
+        awk -F\t '{ printf "%s\t%s",$1,$2 } $3 != "/" { $3="" } { print $3 }' | \
+        tee "$work/fifo" | sort -t $'\t' -k 2 | \
         gzip -9 - >> "$work/statefile"
 
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         rm "$work/statefile"
         Error "list"
     fi
-    
+
     rm "$work/fifo"
 }
 
@@ -159,7 +193,7 @@ case $1 in
         if [ "$#" -ne 2 ]; then
             Error "init usage"
         fi
-        
+
         Check_directory "$2"
         Go_into "$2"
         Check_writability "."
@@ -168,12 +202,40 @@ case $1 in
         Make_workdir
 
         echo "Creating the directory initial state file..."
+        statetime=$(date +%s)
         Make_statefile
 
         echo "Moving the state file to the directory..."
         cp -a "$work/statefile" .psyncstate
         echo "Initial state file created!"
-        
+
+        Clear_workdir
+        ;;
+
+    update)
+        if [ "$#" -ne 2 ]; then
+            Error "update usage"
+        fi
+
+        Check_directory "$2"
+        Go_into "$2"
+        Check_writability "."
+
+        if [ ! -f .psyncstate ]; then
+            Error "no statefile"
+        fi
+
+        Load_statefile
+        Make_workdir
+
+        echo "Updating the state file for this directory..."
+        statetime=$ts
+        Make_statefile
+
+        echo "Moving the state file to the directory..."
+        cp -a "$work/statefile" .psyncstate
+        echo "State file updated!"
+
         Clear_workdir
         ;;
 
@@ -192,11 +254,10 @@ case $1 in
         if [ ! -f .psyncstate ]; then
             echo "No existing state file, creating an empty one."
             uid=$(dd if=/dev/random count=1 2> /dev/null | shasum | awk '{ print $1 }')
-            echo "$uid\n0" | gzip -9 - > .psyncstate
+            echo "~psf!1.0\n$uid\n0" | gzip -9 - > .psyncstate
         fi
 
-        uid=$(gzcat .psyncstate | sed -n 1p)
-        ts=$(gzcat .psyncstate | sed -n 2p)
+        Load_statefile
 
         if [ ! -d "$patchdir/$uid" ]; then
             mkdir "$patchdir/$uid"
@@ -205,39 +266,41 @@ case $1 in
         if [ -d "$patchdir/$uid/$ts" ]; then
             Error "patch exists"
         fi
-        
+
         mkdir "$patchdir/$uid/$ts"
         Make_workdir
-        
+
         echo "Checking the current state of the directory..."
+        statetime=$(date +%s)
         Make_statefile
 
         echo "Checking differences with previous state..."
         mkfifo "$work/fifo"
-        gzcat "$work/statefile" | tail -n+3 > "$work/fifo" &
-        gzcat .psyncstate | tail -n+3 | diff - "$work/fifo" > "$work/diff"
+        gzcat "$work/statefile" | tail -n +4 > "$work/fifo" &
+        gzcat .psyncstate | tail -n +4 | diff - "$work/fifo" > "$work/diff"
         rm "$work/fifo"
 
         echo "Creating archive of files added or modified since last sync..."
-        cat "$work/diff" | awk '$1 == ">"' | awk -F\t '{ print $5 }' | tee "$work/newlist" | \
+        cat "$work/diff" | awk '$1 == ">"' | awk -F\t '{ print $2 }' | tee "$work/newlist" | \
             grep -v /$ | tar --numeric-owner -vncf "$patchdir/$uid/$ts/new" -T -
         echo
 
         echo "Creating archive of directories added or modified since last sync..."
         grep /$ "$work/newlist" | tar --numeric-owner -vncf "$patchdir/$uid/$ts/newdir" -T -
         echo
-        
+
         echo "Files deleted since last sync:"
-        cat "$work/diff" | awk '$1 == "<"' | awk -F\t '{ print $5 }' | \
+        cat "$work/diff" | awk '$1 == "<"' | awk -F\t '{ print $2 }' | \
             diff - "$work/newlist" | awk '$1 == "<"' | cut -c 3- | \
             tee "$patchdir/$uid/$ts/del"
         echo
 
-        
+        echo "$statetime" > "$patchdir/$uid/$ts/statetime"
+        echo "Patch successfully created!"
+
         echo "Updating the state file..."
         cp -a "$work/statefile" .psyncstate
-        tar --numeric-owner -nrf "$patchdir/$uid/$ts/new" ./.psyncstate
-        echo "Patch successfully created and state file updated!"
+        echo "State file updated!"
 
         Clear_workdir
 
@@ -296,20 +359,35 @@ case $1 in
                 fi
             fi
 
-            echo "$uid\n$ts" | gzip -9 - > .psyncstate
+            echo "~psf!1.0\n$uid\n$ts" | gzip -9 - > .psyncstate
         fi
 
         if [ ! -f .psyncstate ]; then
-            Error "no statefile"
+            Error "no statefile dest"
         fi
 
-        while true; do
-            uid=$(gzcat .psyncstate | sed -n 1p)
-            ts=$(gzcat .psyncstate | sed -n 2p)
+        statetime="0"
+        Load_statefile
 
+        while true; do
             echo "Checking if there is a new patch for timestamp $ts..."
             if [ ! -d "$patchdir/$uid/$ts" ]; then
                 echo "No patch available!"
+
+                if [ $statetime != "0" ]; then
+                    Make_workdir
+                    
+                    echo
+                    echo "Updating the state file..."
+                    Make_statefile
+
+                    echo "Moving the state file to the directory..."
+                    cp -a "$work/statefile" .psyncstate
+                    echo "State file updated!"
+
+                    Clear_workdir
+                fi
+
                 exit 0
             fi
            
@@ -317,6 +395,7 @@ case $1 in
             echo
 
             Check_patchdir "$patchdir/$uid/$ts"
+            statetime=$(cat "$patchdir/$uid/$ts/statetime")
 
             echo "Deleting files..."
             for f in $(tail -r "$patchdir/$uid/$ts/del"); do
@@ -340,9 +419,95 @@ case $1 in
                 rm -rf "$patchdir/$uid/$ts"
                 echo "Patch deleted!"
             fi
-
             echo
+
+            ts=$statetime
         done
+        ;;
+
+    upgrade)
+        if [ "$#" -ne 2 ]; then
+            Error "upgrade usage"
+        fi
+
+        Check_directory "$2"
+        Go_into "$2"
+        Check_writability "."
+
+        if [ ! -f .psyncstate ]; then
+            Error "no statefile"
+        fi
+
+        sfversion=$(gzcat .psyncstate | sed -n 1p)
+        case $sfversion in
+            "~psf!1.0")
+                echo "The state file is already at version 1.0"
+                ;;
+
+            *)
+                echo "The state file does not contain a version number."
+                echo "It may be a state file created with a psync version prior to 0.3-alpha."
+                echo
+
+                while true; do
+                    read -p "Is the state file created with a version prior to 0.3-alpha? (y/n) " \
+                        -n 1 -s answer
+                    echo
+                    if [ "$answer" == "n" ] || [ "$answer" == "N" ]; then
+                        echo "Upgrade aborted!"
+                        exit 0
+                    elif [ "$answer" == "y" ] || [ "$answer" == "Y" ]; then
+                        break
+                    fi
+                done
+
+                echo
+                echo "In order to upgrade properly from psync v0.2.x-alpha, please do the following actions:"
+                echo
+                echo "    - With psync v0.2.x-alpha, diff the modified directory and patch the others"
+                echo "    - Do not modify any of the directories in sync"
+                echo "    - If you have modified the extended attributes or ACL of some files, they may be out of sync"
+                echo "      In this case, you should reinitialise the synchronisation process"
+                echo "    - When all the directories are synchronised and unmodified, you can do the upgrade"
+                echo
+                
+                while true; do
+                    read -p "Do you have performed the needed actions? (y/n) " -n 1 -s answer
+                    echo
+                    if [ "$answer" == "n" ] || [ "$answer" == "N" ]; then
+                        echo "Upgrade aborted!"
+                        exit 0
+                    elif [ "$answer" == "y" ] || [ "$answer" == "Y" ]; then
+                        break
+                    fi
+                done
+
+                echo
+                read -p "Ready to upgrade. Do you want to start the process? [Y/n] " -n 1 -s answer
+                echo
+                if [ "$answer" == "n" ] || [ "$answer" == "N" ]; then
+                    echo "Upgrade aborted!"
+                    exit 0
+                fi
+                echo
+
+                echo "Reading the current state file..."
+                uid=$(gzcat .psyncstate | sed -n 1p)
+                ts=$(gzcat .psyncstate | sed -n 2p)
+
+                Make_workdir
+
+                echo "Upgrading the state file..."
+                statetime=$ts
+                Make_statefile
+
+                echo "Moving the new state file to the directory..."
+                cp -a "$work/statefile" .psyncstate
+                echo "State file upgraded to version 1.0!"
+
+                Clear_workdir
+                ;;
+        esac
         ;;
 
     *)
