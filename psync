@@ -1,7 +1,7 @@
 #!/bin/sh
 ###
 ### psync - Patch Sync Utility
-### version: 0.3-alpha
+### version: 0.3.1-alpha
 ###
 ### Jean-Philippe Cugnet, March 2016
 ### <jean-philippe@cugnet.eu>
@@ -398,9 +398,7 @@ case $1 in
             statetime=$(cat "$patchdir/$uid/$ts/statetime")
 
             echo "Deleting files..."
-            for f in $(tail -r "$patchdir/$uid/$ts/del"); do
-                rm -vrf "./$f"
-            done
+            tail -r "$patchdir/$uid/$ts/del" | sed s/^/\".\\// | sed s/$/\"/ | xargs -L1 rm -vrf
             echo
         
             echo "Applying modifications to files..."
